@@ -1,0 +1,5 @@
+# MS MARCO BM25 Baseline Dependencies
+datasets>=2.14.0
+rank_bm25>=0.2.2
+numpy>=1.24.0
+tqdm>=4.65.0

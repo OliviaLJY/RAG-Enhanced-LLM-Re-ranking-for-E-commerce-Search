@@ -1,0 +1,15 @@
+{
+  "model": "BM25 (rank_bm25)",
+  "dataset": "MS MARCO v1.1",
+  "corpus_size": 40779,
+  "metrics": {
+    "Recall@10": 0.6986394557823129,
+    "Recall@100": 0.8622448979591837,
+    "MRR@10": 0.36543002915451894,
+    "Num_Queries": 490
+  },
+  "config": {
+    "sample_limit": 5000,
+    "num_eval": 500
+  }
+}
