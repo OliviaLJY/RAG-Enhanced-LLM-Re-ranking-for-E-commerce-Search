@@ -3,3 +3,6 @@ datasets>=2.14.0
 rank_bm25>=0.2.2
 numpy>=1.24.0
 tqdm>=4.65.0
+
+# Day 4: LLM Reranking
+openai>=1.14.0
