@@ -1,58 +1,46 @@
 """
-Day 4: LLM Reranking (no RAG)
-=====================================
-目标：用 LLM 对 BM25 top-20 进行重排序，验证 MRR@10 提升
+LLM listwise reranking (no RAG) over BM25 top-K.
+基于 BM25 top-K 的 LLM 列表式重排（不使用 RAG 证据）。
 
-Pipeline:  BM25 top-20  →  LLM listwise rerank  →  MRR@10
-Milestone: BM25 MRR@10 < LLM Rerank MRR@10  ✅
+Stage 3 of the pipeline. RankGPT-style: shows the LLM all K passages at once
+and parses the returned ordering "[3] > [1] > [2] > ...".
+流水线第三步：RankGPT 风格的列表式重排序，解析 "[3] > [1] > [2] > ..." 输出。
 
-输入：results/bm25_top20_candidates.json  (由 Day 3 生成)
-输出：results/llm_rerank_results.json
-
-Approach:
-  RankGPT-style listwise reranking — give LLM all 20 passages at once,
-  ask it to output a ranked order "[3] > [1] > [2] > ..."
-  Model: gpt-4o-mini (cheap & fast)
-
-Usage:
-  export OPENAI_API_KEY=<your-key>
-  python llm_rerank.py
+Usage / 用法:
+    export OPENAI_API_KEY=sk-...
+    python llm_rerank.py --num-rerank 50 --model gpt-4o-mini
 """
 
+import argparse
 import json
 import os
 import re
 import time
+from typing import Dict, List, Optional
+
 import numpy as np
-from tqdm import tqdm
-from typing import List, Dict, Optional
-
 from openai import OpenAI
+from tqdm import tqdm
 
+import config
 from bm25_baseline import mrr
 
 
-# ─────────────────────────────────────────────────────────────────
-#  Prompt & Parsing
-# ─────────────────────────────────────────────────────────────────
+# ── Prompt construction & parsing ─────────────────────────────────
 
 def build_reranking_prompt(query: str, passages: List[str]) -> str:
-    """
-    RankGPT-style listwise prompt.
-    Passages are truncated to ~400 chars to keep token count manageable.
-    Expected output: [2] > [5] > [1] > ...
-    """
+    """RankGPT-style listwise prompt. Passages are truncated to keep tokens bounded."""
     n = len(passages)
-    passage_block = ""
-    for i, p in enumerate(passages, 1):
-        truncated = p[:400] + "..." if len(p) > 400 else p
-        passage_block += f"[{i}] {truncated}\n\n"
-
+    truncate = config.PASSAGE_TRUNCATE_CHARS
+    block = "".join(
+        f"[{i}] {(p[:truncate] + '...') if len(p) > truncate else p}\n\n"
+        for i, p in enumerate(passages, 1)
+    )
     return (
         f"I will provide you with {n} passages, each indicated by a numerical "
         f"identifier []. Rank the passages based on their relevance to the search "
         f"query: {query}\n\n"
-        f"{passage_block}"
+        f"{block}"
         f"Search Query: {query}\n\n"
         f"Rank the {n} passages above based on their relevance to the search query. "
         f"The passages should be listed in descending order using identifiers. "
@@ -64,10 +52,9 @@ def build_reranking_prompt(query: str, passages: List[str]) -> str:
 
 def parse_ranking(response: str, num_passages: int) -> List[int]:
     """
-    Parse "[2] > [1] > [3]" → 0-indexed list [1, 0, 2].
-
-    Any passage numbers missing from the LLM output are appended at the end
-    in their original (BM25) order, so the full list always has length num_passages.
+    Parse "[2] > [1] > [3]" into 0-indexed positions.
+    Any positions the LLM omitted are appended in their original BM25 order so
+    the returned list always has length ``num_passages``.
     """
     numbers = re.findall(r"\[(\d+)\]", response)
     ranking: List[int] = []
@@ -76,221 +63,184 @@ def parse_ranking(response: str, num_passages: int) -> List[int]:
     for n_str in numbers:
         n = int(n_str)
         if 1 <= n <= num_passages and n not in seen:
-            ranking.append(n - 1)   # convert to 0-indexed
+            ranking.append(n - 1)
             seen.add(n)
 
-    # Preserve BM25 order for any position the LLM skipped
     for i in range(num_passages):
         if i not in seen:
             ranking.append(i)
-
     return ranking
 
 
-# ─────────────────────────────────────────────────────────────────
-#  LLM Reranking
-# ─────────────────────────────────────────────────────────────────
+# ── LLM call ──────────────────────────────────────────────────────
 
 def rerank_query(
     client: OpenAI,
     query: str,
     candidates: List[Dict],
-    model: str = "gpt-4o-mini",
+    model: str = config.LLM_MODEL,
     max_retries: int = 2,
 ) -> Optional[List[int]]:
-    """
-    Rerank candidates for a single query.
-
-    Returns 0-indexed reranked positions into `candidates`, or None on failure.
-    """
-    passages = [c["passage"] for c in candidates]
-    prompt = build_reranking_prompt(query, passages)
+    """Return reranked 0-indexed positions into ``candidates``, or None on failure."""
+    prompt = build_reranking_prompt(query, [c["passage"] for c in candidates])
 
     for attempt in range(max_retries + 1):
         try:
             response = client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0,
-                max_tokens=300,
+                temperature=config.LLM_TEMPERATURE,
+                max_tokens=config.LLM_MAX_TOKENS,
             )
             raw = response.choices[0].message.content.strip()
-            return parse_ranking(raw, len(passages))
-        except Exception as e:
+            return parse_ranking(raw, len(candidates))
+        except Exception as e:  # noqa: BLE001
             if attempt < max_retries:
                 wait = 2 ** attempt
-                print(f"\n  ⚠ Attempt {attempt + 1} failed ({e}). Retrying in {wait}s...")
+                print(f"\n  Attempt {attempt + 1} failed ({e}). Retrying in {wait}s...")
                 time.sleep(wait)
             else:
-                print(f"\n  ✗ All retries failed for query: {query[:60]}...")
+                print(f"\n  All retries failed for query: {query[:60]}...")
                 return None
 
 
-# ─────────────────────────────────────────────────────────────────
-#  Metrics
-# ─────────────────────────────────────────────────────────────────
+# ── Metrics ───────────────────────────────────────────────────────
 
-def compute_mrr_at_k(queries: List[Dict], use_llm_order: bool, k: int = 10) -> float:
-    scores = []
-    for q in queries:
-        relevant_ids = set(q["relevant_doc_ids"])
-        if use_llm_order:
-            doc_ids = q.get("llm_reranked_doc_ids", [c["doc_id"] for c in q["candidates"]])
-        else:
-            doc_ids = [c["doc_id"] for c in q["candidates"]]
-        scores.append(mrr(doc_ids[:k], relevant_ids))
+def _doc_ids(q: Dict, use_llm_order: bool) -> List[int]:
+    if use_llm_order:
+        return q.get("llm_reranked_doc_ids", [c["doc_id"] for c in q["candidates"]])
+    return [c["doc_id"] for c in q["candidates"]]
+
+
+def compute_mrr_at_k(queries: List[Dict], use_llm_order: bool, k: int) -> float:
+    scores = [mrr(_doc_ids(q, use_llm_order)[:k], set(q["relevant_doc_ids"])) for q in queries]
     return float(np.mean(scores)) if scores else 0.0
 
 
 def compute_recall_at_k(queries: List[Dict], use_llm_order: bool, k: int) -> float:
     scores = []
     for q in queries:
-        relevant_ids = set(q["relevant_doc_ids"])
-        if use_llm_order:
-            doc_ids = q.get("llm_reranked_doc_ids", [c["doc_id"] for c in q["candidates"]])
-        else:
-            doc_ids = [c["doc_id"] for c in q["candidates"]]
-        hits = sum(1 for d in doc_ids[:k] if d in relevant_ids)
-        scores.append(hits / len(relevant_ids) if relevant_ids else 0.0)
+        rel = set(q["relevant_doc_ids"])
+        if not rel:
+            scores.append(0.0)
+            continue
+        hits = sum(1 for d in _doc_ids(q, use_llm_order)[:k] if d in rel)
+        scores.append(hits / len(rel))
     return float(np.mean(scores)) if scores else 0.0
 
 
-# ─────────────────────────────────────────────────────────────────
-#  Main
-# ─────────────────────────────────────────────────────────────────
+# ── CLI ───────────────────────────────────────────────────────────
 
-def main():
-    print("=" * 60)
-    print("🤖 Day 4: LLM Reranking (no RAG)")
-    print("=" * 60)
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="LLM listwise reranking on BM25 top-K candidates.")
+    p.add_argument("--candidates", type=str, default=str(config.BM25_CANDIDATES),
+                   help="Input JSON produced by bm25_export_topk.py")
+    p.add_argument("--output", type=str, default=str(config.LLM_RERANK_RESULTS))
+    p.add_argument("--model", type=str, default=config.LLM_MODEL)
+    p.add_argument("--num-rerank", type=int, default=config.NUM_RERANK,
+                   help="Number of queries to rerank (budget cap).")
+    p.add_argument("--top-k-rerank", type=int, default=config.TOP_K_EXPORT,
+                   help="How many BM25 candidates to pass to the LLM.")
+    p.add_argument("--sleep", type=float, default=config.LLM_SLEEP_BETWEEN)
+    p.add_argument("--seed", type=int, default=config.RANDOM_SEED)
+    return p.parse_args()
 
-    # ── Config ────────────────────────────────────────────────────
-    MODEL = "gpt-4o-mini"
-    NUM_RERANK = 50        # queries to rerank (budget control; ~$0.02 with gpt-4o-mini)
-    TOP_K_RERANK = 20      # how many BM25 candidates to pass to LLM
-    SLEEP_BETWEEN = 0.3    # seconds between API calls
 
-    # ── Load Day 3 output ─────────────────────────────────────────
-    candidates_path = "results/bm25_top20_candidates.json"
-    if not os.path.exists(candidates_path):
-        print(f"❌  {candidates_path} not found.")
-        print("    Run Day 3 first:  python bm25_export_topk.py")
-        return
+def main() -> None:
+    args = parse_args()
+    config.seed_everything(args.seed)
 
-    with open(candidates_path) as f:
+    if not os.path.exists(args.candidates):
+        raise SystemExit(
+            f"{args.candidates} not found. Run bm25_export_topk.py first."
+        )
+
+    with open(args.candidates) as f:
         data = json.load(f)
 
     all_queries = data["queries"]
-    queries = all_queries[:NUM_RERANK]
-    print(f"📂 Loaded {len(all_queries)} queries → using first {len(queries)} for LLM reranking")
+    queries = all_queries[: args.num_rerank]
+    print(f"Loaded {len(all_queries)} queries; reranking first {len(queries)} with {args.model}.")
 
-    # ── BM25 baseline MRR@10 (on this subset) ─────────────────────
-    bm25_mrr10 = compute_mrr_at_k(queries, use_llm_order=False, k=10)
+    k = config.DEFAULT_K_METRIC
+    bm25_mrr10 = compute_mrr_at_k(queries, use_llm_order=False, k=k)
     bm25_recall5 = compute_recall_at_k(queries, use_llm_order=False, k=5)
-    print(f"\n📊 BM25 baseline on {len(queries)} queries:")
-    print(f"   MRR@10:    {bm25_mrr10:.4f}")
-    print(f"   Recall@5:  {bm25_recall5:.4f}")
+    print(f"BM25 baseline on subset — MRR@{k}: {bm25_mrr10:.4f}, Recall@5: {bm25_recall5:.4f}")
 
-    # ── API key check ─────────────────────────────────────────────
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        print("\n❌  OPENAI_API_KEY is not set.")
-        print("    Run:  export OPENAI_API_KEY=sk-...")
-        return
+        raise SystemExit("OPENAI_API_KEY is not set. See .env.example.")
 
     client = OpenAI(api_key=api_key)
-    print(f"\n🔄 Reranking {len(queries)} queries with {MODEL} (top-{TOP_K_RERANK} each)...")
-    print(f"   Estimated cost: ~${len(queries) * TOP_K_RERANK * 400 / 1_000_000 * 0.15:.3f} USD\n")
-
-    # ── Reranking loop ────────────────────────────────────────────
     failed = 0
     for q in tqdm(queries, desc="LLM reranking"):
-        candidates = q["candidates"][:TOP_K_RERANK]
-        reranked_order = rerank_query(client, q["query"], candidates, model=MODEL)
-
+        candidates = q["candidates"][: args.top_k_rerank]
+        reranked = rerank_query(client, q["query"], candidates, model=args.model)
         original_doc_ids = [c["doc_id"] for c in candidates]
-        if reranked_order is not None:
-            q["llm_reranked_doc_ids"] = [original_doc_ids[i] for i in reranked_order]
+        if reranked is not None:
+            q["llm_reranked_doc_ids"] = [original_doc_ids[i] for i in reranked]
             q["llm_rerank_success"] = True
         else:
-            q["llm_reranked_doc_ids"] = original_doc_ids   # fallback: keep BM25 order
+            q["llm_reranked_doc_ids"] = original_doc_ids
             q["llm_rerank_success"] = False
             failed += 1
+        time.sleep(args.sleep)
 
-        time.sleep(SLEEP_BETWEEN)
-
-    # ── LLM rerank MRR@10 ─────────────────────────────────────────
-    llm_mrr10 = compute_mrr_at_k(queries, use_llm_order=True, k=10)
+    llm_mrr10 = compute_mrr_at_k(queries, use_llm_order=True, k=k)
     llm_recall5 = compute_recall_at_k(queries, use_llm_order=True, k=5)
 
-    # ── Per-query delta ───────────────────────────────────────────
     deltas = []
     for q in queries:
         rel = set(q["relevant_doc_ids"])
-        bm25_q = mrr([c["doc_id"] for c in q["candidates"]][:10], rel)
-        llm_q = mrr(q["llm_reranked_doc_ids"][:10], rel)
+        bm25_q = mrr([c["doc_id"] for c in q["candidates"]][:k], rel)
+        llm_q = mrr(q["llm_reranked_doc_ids"][:k], rel)
         deltas.append(llm_q - bm25_q)
 
     delta_mrr = llm_mrr10 - bm25_mrr10
+    rel_gain = (delta_mrr / bm25_mrr10 * 100.0) if bm25_mrr10 > 0 else 0.0
     arrow = "↑" if delta_mrr > 0 else ("↓" if delta_mrr < 0 else "→")
 
-    # ── Print results ─────────────────────────────────────────────
-    print("\n" + "=" * 60)
-    print("📈 Results: BM25 → LLM Rerank")
-    print("=" * 60)
-    print(f"  Queries evaluated:    {len(queries)}")
-    print(f"  Failed reranks:       {failed}  (fell back to BM25 order)")
-    print(f"")
-    print(f"  Metric        BM25      LLM       Δ")
-    print(f"  ──────────────────────────────────────")
-    print(f"  MRR@10        {bm25_mrr10:.4f}    {llm_mrr10:.4f}    {delta_mrr:+.4f} {arrow}")
-    print(f"  Recall@5      {bm25_recall5:.4f}    {llm_recall5:.4f}    {llm_recall5 - bm25_recall5:+.4f}")
-    print(f"")
-    rel_gain = delta_mrr / bm25_mrr10 * 100 if bm25_mrr10 > 0 else 0
-    print(f"  Relative MRR@10 gain: {rel_gain:+.1f}%")
-    print(f"  Queries improved:     {sum(1 for d in deltas if d > 0)}/{len(queries)}")
-    print(f"  Queries degraded:     {sum(1 for d in deltas if d < 0)}/{len(queries)}")
-    print("=" * 60)
+    print("\nResults: BM25 → LLM Rerank")
+    print(f"  Queries           : {len(queries)} ({failed} fell back to BM25 on failure)")
+    print(f"  MRR@{k}            : {bm25_mrr10:.4f} → {llm_mrr10:.4f}  ({delta_mrr:+.4f} {arrow})")
+    print(f"  Recall@5          : {bm25_recall5:.4f} → {llm_recall5:.4f}")
+    print(f"  Relative MRR gain : {rel_gain:+.1f}%")
+    print(f"  Improved / Tied / Degraded: "
+          f"{sum(1 for d in deltas if d > 0)} / "
+          f"{sum(1 for d in deltas if d == 0)} / "
+          f"{sum(1 for d in deltas if d < 0)}")
 
-    # ── Save results ──────────────────────────────────────────────
-    os.makedirs("results", exist_ok=True)
-    results = {
-        "day": "Day 4",
-        "model": MODEL,
-        "num_queries": len(queries),
-        "failed_reranks": failed,
-        "metrics": {
-            "bm25_mrr10": round(bm25_mrr10, 6),
-            "llm_rerank_mrr10": round(llm_mrr10, 6),
-            "delta_mrr10": round(delta_mrr, 6),
-            "relative_gain_pct": round(rel_gain, 2),
-            "bm25_recall5": round(bm25_recall5, 6),
-            "llm_rerank_recall5": round(llm_recall5, 6),
-        },
-        "per_query_improvement": {
-            "mean_delta": round(float(np.mean(deltas)), 6),
-            "queries_improved": int(sum(1 for d in deltas if d > 0)),
-            "queries_degraded": int(sum(1 for d in deltas if d < 0)),
-            "queries_neutral": int(sum(1 for d in deltas if d == 0)),
-        },
-        "config": {
-            "top_k_rerank": TOP_K_RERANK,
-            "num_rerank": NUM_RERANK,
-            "sleep_between": SLEEP_BETWEEN,
-        },
-    }
-
-    out_path = "results/llm_rerank_results.json"
-    with open(out_path, "w") as f:
-        json.dump(results, f, indent=2)
-
-    print(f"\n💾 Saved: {out_path}")
-
-    if delta_mrr > 0:
-        print(f"\n✅ Day 4 完成！Milestone: BM25 → LLM Rerank ↑  ({bm25_mrr10:.4f} → {llm_mrr10:.4f})")
-    else:
-        print(f"\n⚠  Day 4 完成，但 MRR 未提升 ({bm25_mrr10:.4f} → {llm_mrr10:.4f})")
-        print("   Tips: try more queries, a stronger model (gpt-4o), or larger NUM_RERANK.")
+    config.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    with open(args.output, "w") as f:
+        json.dump({
+            "model": args.model,
+            "num_queries": len(queries),
+            "failed_reranks": failed,
+            "metrics": {
+                "bm25_mrr10": round(bm25_mrr10, 6),
+                "llm_rerank_mrr10": round(llm_mrr10, 6),
+                "delta_mrr10": round(delta_mrr, 6),
+                "relative_gain_pct": round(rel_gain, 2),
+                "bm25_recall5": round(bm25_recall5, 6),
+                "llm_rerank_recall5": round(llm_recall5, 6),
+            },
+            "per_query_improvement": {
+                "mean_delta": round(float(np.mean(deltas)), 6),
+                "queries_improved": int(sum(1 for d in deltas if d > 0)),
+                "queries_degraded": int(sum(1 for d in deltas if d < 0)),
+                "queries_neutral": int(sum(1 for d in deltas if d == 0)),
+            },
+            "config": {
+                "top_k_rerank": args.top_k_rerank,
+                "num_rerank": args.num_rerank,
+                "sleep_between": args.sleep,
+                "temperature": config.LLM_TEMPERATURE,
+                "max_tokens": config.LLM_MAX_TOKENS,
+                "passage_truncate_chars": config.PASSAGE_TRUNCATE_CHARS,
+                "seed": args.seed,
+            },
+        }, f, indent=2)
+    print(f"\nSaved: {args.output}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Large generated artifacts — keep small JSON summaries, ignore bulk dumps
+results/bm25_top20_candidates.json
+results/*_candidates.json
+results/*_predictions.json
+results/cache/
+
+# HuggingFace dataset cache (when HF_HOME is local)
+.cache/
+hf_cache/
