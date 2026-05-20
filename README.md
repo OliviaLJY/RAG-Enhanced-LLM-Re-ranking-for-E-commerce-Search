@@ -18,15 +18,16 @@ Query
   │
   ├─▶ (1) Candidate Retrieval (BM25)            ── implemented
   │
-  ├─▶ (2) Query → Attribute Decomposition (LLM) ── planned
+  ├─▶ (2) Query → Attribute Decomposition (LLM) ── implemented
   │
-  ├─▶ (3) Evidence Retrieval (RAG)              ── planned
+  ├─▶ (3) Evidence Retrieval (RAG)              ── implemented (v0 + v1)
   │
-  └─▶ (4) Attribute-grounded LLM Re-ranking     ── partial (no-RAG variant)
+  └─▶ (4) Attribute-grounded LLM Re-ranking     ── implemented (listwise + pointwise)
 ```
 
-Currently implemented: **stages (1) and a no-RAG variant of (4)**. The
-attribute / evidence modules are the research contribution and remain TBD.
+All four pipeline stages are now end-to-end runnable. The remaining work is
+**experiments**: ablations, hard baselines (`cross-encoder/ms-marco-MiniLM-L-6-v2`),
+significance tests, and the e-commerce-dataset transfer.
 
 ### Results (MS MARCO v1.1, 5K-query slice)
 
@@ -63,8 +64,25 @@ python bm25_baseline.py --sample-limit 5000 --num-eval 500
 # Stage 2 — Export BM25 top-20 candidates per query
 python bm25_export_topk.py --num-queries 500 --top-k 20
 
-# Stage 3 (LLM rerank, no RAG) — Requires OPENAI_API_KEY
+# Stage 2a — Query → Attribute decomposition (LLM, structured JSON)
+python query_attributes.py --num-queries 100 --resume
+
+# Stage 2b — Evidence retrieval v0 (lexical + SBERT cosine, no LLM)
+python evidence_retrieval.py --num-queries 50 --top-k-candidates 10
+
+# Stage 2c — Evidence verifier v1 (LLM filter on top of v0); optional
+python evidence_verify.py --min-confidence 3
+
+# Stage 3 — LLM rerank (no-RAG baseline) — Requires OPENAI_API_KEY
 python llm_rerank.py --num-rerank 50 --model gpt-4o-mini
+
+# Stage 4a — Attribute-grounded listwise rerank (RankGPT-style + evidence)
+python rerank_listwise_evidence.py --num-rerank 50 --top-k 20
+
+# Stage 4b — Attribute-grounded pointwise rerank (per-candidate score + reason)
+python rerank_pointwise_evidence.py --num-rerank 50 --top-k 10
+
+# Use --evidence results/evidence_verified.json on 4a/4b to compare v0 vs v1.
 
 # Recompute metrics from any saved results file (no LLM calls)
 python evaluate.py results/bm25_top20_candidates.json
@@ -75,9 +93,14 @@ python evaluate.py results/bm25_top20_candidates.json --use-llm-order --k 10
 
 ```
 .
-├── bm25_baseline.py        # Stage 1: BM25 index + Recall/MRR baseline
-├── bm25_export_topk.py     # Stage 2: dump top-K candidates per query
-├── llm_rerank.py           # Stage 3: RankGPT-style listwise rerank
+├── bm25_baseline.py             # Stage 1: BM25 index + Recall/MRR baseline
+├── bm25_export_topk.py          # Stage 2: dump top-K candidates per query
+├── query_attributes.py          # Stage 2a: Query → structured attribute JSON (Day 5)
+├── evidence_retrieval.py        # Stage 2b: per-attribute evidence, v0 (Day 6)
+├── evidence_verify.py           # Stage 2c: LLM verifier, v1 (Day 6)
+├── llm_rerank.py                # Stage 3: RankGPT-style listwise rerank (no-RAG)
+├── rerank_listwise_evidence.py  # Stage 4a: attribute-grounded listwise (Day 7)
+├── rerank_pointwise_evidence.py # Stage 4b: attribute-grounded pointwise + reason (Day 7)
 ├── evaluate.py             # Recompute metrics from saved JSON
 ├── config.py               # Shared constants + seed_everything()
 ├── requirements.txt        # Pinned dependencies
@@ -101,15 +124,159 @@ python evaluate.py results/bm25_top20_candidates.json --use-llm-order --k 10
 The current code is a baseline; the research delta lives in modules **not yet
 written**:
 
-1. **Query → Attribute Decomposition** — LLM emits structured intent
-   `{use_case, constraints, important_attributes, soft_preferences}`.
-2. **Evidence Retrieval** — per-attribute span retrieval against
+1. ~~**Query → Attribute Decomposition** — LLM emits structured intent~~
+   ✅ Implemented in `query_attributes.py` (Day 5). Schema is generalized
+   beyond e-commerce (see [Schema](#query--attribute-schema-day-5) below) so
+   MS MARCO's factual / how-to queries also fit.
+2. ~~**Evidence Retrieval** — per-attribute span retrieval against
    title / description / reviews. A learned retriever (Contriever / ColBERT)
-   would be more defensible than keyword match.
-3. **Attribute-Grounded Re-ranking** — score each candidate against the
-   attribute-evidence bundle, emit `{score, reason}` for explainability.
-4. **Ablations** — `-attribute`, `-evidence`, full method, plus a hardened
-   baseline (`cross-encoder/ms-marco-MiniLM-L-6-v2`) and significance tests.
+   would be more defensible than keyword match.~~
+   ✅ Implemented as a two-stage ablation chain (Day 6):
+   - **v0** (`evidence_retrieval.py`) — lexical keyword overlap + SBERT
+     (`all-MiniLM-L6-v2`) cosine similarity, weighted by `--alpha`. No LLM
+     calls; serves as the deliberately-simple lower bound.
+   - **v1** (`evidence_verify.py`) — LLM verifier layered on v0. Per
+     `(query, candidate)` it asks `gpt-4o-mini` "does this evidence support
+     this attribute?", filters by `--min-confidence` (1-5). Decoupling lets
+     you tune v0 freely without re-paying for LLM calls, and the v1 delta is
+     measurable as a clean ablation.
+   - A learned retriever (Contriever / ColBERT) is still the natural v2 if v1
+     proves a viable signal.
+3. ~~**Attribute-Grounded Re-ranking** — score each candidate against the
+   attribute-evidence bundle, emit `{score, reason}` for explainability.~~
+   ✅ Implemented as two complementary modes (Day 7) so each can be ablated:
+   - **Listwise** (`rerank_listwise_evidence.py`) — RankGPT-style; one LLM
+     call per query, all candidates plus their evidence in the prompt.
+     Cheapest, directly comparable to the no-RAG `llm_rerank.py` baseline.
+   - **Pointwise** (`rerank_pointwise_evidence.py`) — one LLM call per
+     `(query, candidate)` returning `{"score": 1-5, "reason": "..."}`.
+     Sorted by score with BM25 rank as tiebreak. The `reason` field is the
+     paper's explainability artifact and supports per-attribute weighting in
+     follow-up work.
+   - Both consume the v0 *or* v1 evidence JSON via `--evidence`, so the
+     `evidence_quality × rerank_mode` ablation is a 2×2 grid for free.
+4. **Ablations** — `-attribute`, `-evidence` (v0 vs. v1), listwise vs.
+   pointwise, full method, plus a hardened baseline
+   (`cross-encoder/ms-marco-MiniLM-L-6-v2`) and significance tests.
+
+### Query → Attribute schema (Day 5)
+
+Each query is decomposed into a strict JSON object:
+
+```json
+{
+  "intent_type":          "factual | product_search | how_to | comparison | navigational | other",
+  "core_concepts":        ["main subject/entity nouns"],
+  "constraints":          ["hard filters: price, time, location, audience"],
+  "important_attributes": ["attributes that drive relevance"],
+  "soft_preferences":     ["nice-to-haves"]
+}
+```
+
+Example — product search:
+
+```json
+{
+  "intent_type": "product_search",
+  "core_concepts": ["headphones"],
+  "constraints": ["under $100", "for gym use"],
+  "important_attributes": ["sweat resistance", "secure fit", "battery life"],
+  "soft_preferences": ["noise cancellation", "lightweight"]
+}
+```
+
+Example — factual MS MARCO query:
+
+```json
+{
+  "intent_type": "factual",
+  "core_concepts": ["capital", "France"],
+  "constraints": [],
+  "important_attributes": [],
+  "soft_preferences": []
+}
+```
+
+Generation uses `response_format={"type": "json_object"}` and a normalizer
+(`query_attributes.normalize_attributes`) that fills missing fields with safe
+defaults so downstream stages can rely on the shape.
+
+### Evidence retrieval schema (Day 6)
+
+`evidence_retrieval.py` (v0) emits one evidence map per `(query, candidate)`:
+
+```json
+{
+  "query_id": 0,
+  "query": "best headphones for gym",
+  "attributes": { ... Day 5 schema ... },
+  "candidates": [
+    {
+      "doc_id": 1234,
+      "rank": 1,
+      "is_relevant": true,
+      "evidence": {
+        "sweat resistance": {
+          "field": "important_attributes",
+          "evidence": "IPX7 rating protects against sweat and rain.",
+          "score":   0.81,
+          "cosine":  0.74,
+          "keyword": 0.66
+        },
+        "battery life": { ... }
+      }
+    }
+  ]
+}
+```
+
+`score = alpha * cosine + (1 - alpha) * keyword`. Default `alpha=0.6`.
+
+`evidence_verify.py` (v1) preserves the same shape but each evidence entry
+gains `verifier_confidence: 1-5`, and entries where the LLM said
+`supports=false` or `confidence < --min-confidence` are dropped. The raw
+per-attribute verdicts are kept under `candidates[i]._verifier_raw` for audit.
+
+### Reranker output schema (Day 7)
+
+Both rerankers emit the same evaluatable shape so `evaluate.py --use-llm-order`
+works on either file:
+
+```json
+{
+  "method": "listwise_with_evidence" | "pointwise_with_evidence",
+  "evidence_source": "results/evidence_retrieval.json",
+  "metrics": {
+    "bm25_mrr10": 0.36,
+    "llm_rerank_mrr10": 0.42,
+    "delta_mrr10": 0.06,
+    "relative_gain_pct": 16.6,
+    "...": "..."
+  },
+  "queries": [
+    {
+      "query_id": 0,
+      "query": "...",
+      "relevant_doc_ids": [...],
+      "candidates":           [{"rank": 1, "doc_id": ..., "is_relevant": ...}],
+      "llm_reranked_doc_ids": [...],
+      "rerank_success": true,
+      "scored_candidates":    [               // pointwise only
+        {"doc_id": ..., "score": 5, "reason": "...", "evidence_attrs": [...]}
+      ]
+    }
+  ]
+}
+```
+
+### Ablation grid (4 runs, all from the same upstream artifacts)
+
+| Evidence source                  | Listwise (4a) | Pointwise (4b) |
+|----------------------------------|---------------|----------------|
+| `evidence_retrieval.json` (v0)   | run a         | run b          |
+| `evidence_verified.json` (v1)    | run c         | run d          |
+
+Plus the no-RAG `llm_rerank.py` (run 0) and BM25 (run -) as references.
 
 See [中文](#中文) for the original day-by-day plan.
 
@@ -165,8 +332,25 @@ python bm25_baseline.py --sample-limit 5000 --num-eval 500
 # 阶段 2：导出每条 query 的 BM25 top-20 候选
 python bm25_export_topk.py --num-queries 500 --top-k 20
 
-# 阶段 3：LLM 列表式重排序（无 RAG）
+# 阶段 2a：Query → 结构化属性分解（Day 5）
+python query_attributes.py --num-queries 100 --resume
+
+# 阶段 2b：证据检索 v0（关键词 + SBERT 余弦，无 LLM）
+python evidence_retrieval.py --num-queries 50 --top-k-candidates 10
+
+# 阶段 2c：证据验证 v1（LLM 验证器叠加 v0），可选
+python evidence_verify.py --min-confidence 3
+
+# 阶段 3：LLM 列表式重排序（无 RAG 基线）
 python llm_rerank.py --num-rerank 50 --model gpt-4o-mini
+
+# 阶段 4a：属性证据驱动的列表式重排
+python rerank_listwise_evidence.py --num-rerank 50 --top-k 20
+
+# 阶段 4b：属性证据驱动的点式重排（含 reason，可解释）
+python rerank_pointwise_evidence.py --num-rerank 50 --top-k 10
+
+# 把 4a/4b 的 --evidence 切到 results/evidence_verified.json 即可对比 v0 / v1。
 
 # 离线复算指标（不再调用 LLM）
 python evaluate.py results/bm25_top20_candidates.json
@@ -185,42 +369,101 @@ python evaluate.py results/bm25_top20_candidates.json
 #### Module 1：候选检索 BM25 ✅
 已完成，BM25 top-100。
 
-#### Module 2：Query → Attribute（创新点 1）
-LLM 把 query 解构成结构化意图：
+#### Module 2：Query → Attribute（创新点 1）✅
+LLM 把 query 解构成结构化意图（已实现，`query_attributes.py`）。为了同时覆盖
+MS MARCO 的事实型 query 与电商型 query，统一为以下 schema：
 
-```
-Query: "best headphones for gym under $100"
-↓
+```json
 {
-  "use_case": "gym",
-  "constraints": ["under $100"],
-  "important_attributes": ["sweat resistance", "secure fit", "battery life", "durability"],
+  "intent_type":          "factual | product_search | how_to | comparison | navigational | other",
+  "core_concepts":        ["主要主体/实体"],
+  "constraints":          ["硬约束：价格、时间、地点、人群"],
+  "important_attributes": ["决定相关性的属性"],
+  "soft_preferences":     ["加分项"]
+}
+```
+
+电商示例：
+
+```json
+{
+  "intent_type": "product_search",
+  "core_concepts": ["headphones"],
+  "constraints": ["under $100", "for gym use"],
+  "important_attributes": ["sweat resistance", "secure fit", "battery life"],
   "soft_preferences": ["noise cancellation", "lightweight"]
 }
 ```
 
-#### Module 3：Evidence Retrieval（创新点 2）
-对每个 attribute，从 item 文本（title / description / reviews）中检索支持
-证据，本质是 attribute → evidence 的对齐，而不是简单文本拼接。
+事实型 query 示例：
 
-```
+```json
 {
-  "sweat resistance": "IPX7 waterproof rating",
-  "battery life":      "10 hours continuous playback",
-  "secure fit":        "ergonomic ear hook design"
+  "intent_type": "factual",
+  "core_concepts": ["capital", "France"],
+  "constraints": [],
+  "important_attributes": [],
+  "soft_preferences": []
 }
 ```
 
-#### Module 4：Attribute-grounded LLM Rerank
-Prompt 结构：
+#### Module 3：Evidence Retrieval（创新点 2）✅
+两阶段消融链（Day 6）：
+
+- **v0** (`evidence_retrieval.py`) — 关键词重合 + SBERT (`all-MiniLM-L6-v2`)
+  余弦相似度，按 `--alpha` 加权（默认 0.6）。**不调用 LLM**，是有意设计的简单下界。
+- **v1** (`evidence_verify.py`) — 在 v0 之上叠加 LLM 验证器。按 (query, 候选)
+  批量请求 `gpt-4o-mini` 判断「该证据是否真正支持该属性」，按
+  `--min-confidence` (1–5) 过滤。两段拆开，v0 可自由调参，v1 增量可独立度量。
+
+后续若 v1 验证为有效信号，自然 v2 是训练小型 evidence retriever（Contriever /
+ColBERT），训练数据可由 LLM 生成 `(attribute, evidence)` 对。
+
+证据 JSON 结构示例：
+
+```json
+{
+  "sweat resistance": {
+    "field":   "important_attributes",
+    "evidence": "IPX7 rating protects against sweat and rain.",
+    "score":   0.81,
+    "cosine":  0.74,
+    "keyword": 0.66
+  }
+}
+```
+
+`score = alpha * cosine + (1 - alpha) * keyword`。v1 额外加 `verifier_confidence: 1-5`，
+被验证器判为不支持或低置信度的证据会被剔除。
+
+#### Module 4：Attribute-grounded LLM Rerank ✅
+两种互补模式（Day 7），各自独立 ablation：
+
+- **Listwise** (`rerank_listwise_evidence.py`) — RankGPT 风格，一次 LLM 调用
+  喂入全部候选 + 各自的属性证据。最便宜，与无 RAG 的 `llm_rerank.py` 直接对比。
+- **Pointwise** (`rerank_pointwise_evidence.py`) — 每条 (query, candidate) 调用一次
+  LLM，返回 `{"score": 1-5, "reason": "..."}`。按分数排序，BM25 原始名次作为
+  并列时的次序。`reason` 字段是论文的可解释性叙事来源。
+- 两者都通过 `--evidence` 接 v0 或 v1 的证据 JSON，所以
+  `证据质量 × 重排模式` 直接是 2×2 消融网格。
+
+Prompt 结构（pointwise）：
 
 ```
-Query: ...
-Attributes: ...
-Candidate Item: ...
-Evidence: ...
+Search query: ...
+Query intent: ...
+Important attributes: ...
+Constraints: ...
 
-Task: Score how well the item satisfies the query based on the attributes and evidence.
+Candidate passage:
+...
+
+Attribute evidence found in passage:
+- attribute_a: "..."
+- attribute_b: "..."
+
+Score 1-5 how well the passage satisfies the query.
+Return JSON: {"score": <int 1-5>, "reason": "<one sentence>"}.
 ```
 
 ### 实验设计
@@ -240,7 +483,7 @@ Task: Score how well the item satisfies the query based on the attributes and ev
 
 | 周次 | 重点 |
 |------|------|
-| Week 1 | Day 1–2 BM25 ✅ · Day 3 导出 top-K ✅ · Day 4 LLM rerank ✅ · Day 5 Query→Attribute · Day 6 Evidence Retrieval · Day 7 完整 pipeline |
+| Week 1 | Day 1–2 BM25 ✅ · Day 3 导出 top-K ✅ · Day 4 LLM rerank ✅ · Day 5 Query→Attribute ✅ · Day 6 Evidence Retrieval v0+v1 ✅ · Day 7 完整 pipeline ✅ |
 | Week 2 | Day 8–9 full eval · Day 10 ablation · Day 11 long-tail · Day 12 efficiency |
 | Week 3 | Day 13–14 Method/Experiment · Day 15 Intro · Day 16 Abstract |
 
