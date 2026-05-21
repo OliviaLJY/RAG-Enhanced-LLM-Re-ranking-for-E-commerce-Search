@@ -26,10 +26,10 @@ Query
 ```
 
 All four pipeline stages are now end-to-end runnable. The remaining work is
-**experiments**: ablations, significance tests, and the e-commerce-dataset
-transfer. The hard cross-encoder baseline
-(`cross-encoder/ms-marco-MiniLM-L-6-v2`) is implemented in
-`cross_encoder_rerank.py`.
+**experiments**: ablations and the e-commerce-dataset transfer. The hard
+cross-encoder baseline (`cross-encoder/ms-marco-MiniLM-L-6-v2`) is implemented
+in `cross_encoder_rerank.py`, and a paired-bootstrap significance test is in
+`significance.py`.
 
 ### Results (MS MARCO v1.1, 5K-query slice)
 
@@ -94,6 +94,13 @@ python evaluate.py results/bm25_top20_candidates.json
 python evaluate.py results/bm25_top20_candidates.json --use-llm-order --k 10
 python evaluate.py results/cross_encoder_rerank_results.json \
     --use-llm-order --rerank-key cross_encoder_reranked_doc_ids --k 10
+
+# Paired-bootstrap significance test on per-query MRR deltas (numpy-only)
+python significance.py \
+    --baseline results/bm25_top20_candidates.json \
+    --method   results/cross_encoder_rerank_results.json \
+    --method-key cross_encoder_reranked_doc_ids \
+    --output results/sig_ce_vs_bm25.json
 ```
 
 ### Project layout
@@ -107,6 +114,7 @@ python evaluate.py results/cross_encoder_rerank_results.json \
 ├── evidence_verify.py           # Stage 2c: LLM verifier, v1 (Day 6)
 ├── llm_rerank.py                # Stage 3: RankGPT-style listwise rerank (no-RAG)
 ├── cross_encoder_rerank.py      # Hard baseline: cross-encoder/ms-marco-MiniLM-L-6-v2
+├── significance.py              # Paired-bootstrap p-value + 95% CI on MRR deltas
 ├── rerank_listwise_evidence.py  # Stage 4a: attribute-grounded listwise (Day 7)
 ├── rerank_pointwise_evidence.py # Stage 4b: attribute-grounded pointwise + reason (Day 7)
 ├── evaluate.py             # Recompute metrics from saved JSON
@@ -164,9 +172,9 @@ written**:
    - Both consume the v0 *or* v1 evidence JSON via `--evidence`, so the
      `evidence_quality × rerank_mode` ablation is a 2×2 grid for free.
 4. **Ablations** — `-attribute`, `-evidence` (v0 vs. v1), listwise vs.
-   pointwise, full method, plus significance tests. The hard cross-encoder
-   baseline (`cross-encoder/ms-marco-MiniLM-L-6-v2`) is implemented in
-   `cross_encoder_rerank.py`.
+   pointwise, full method. The hard cross-encoder baseline
+   (`cross-encoder/ms-marco-MiniLM-L-6-v2`) is in `cross_encoder_rerank.py`;
+   paired-bootstrap significance testing is in `significance.py`.
 
 ### Query → Attribute schema (Day 5)
 

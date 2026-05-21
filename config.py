@@ -79,6 +79,10 @@ POINTWISE_FALLBACK_SCORE = 3    # used when LLM call fails — preserves BM25 ti
 # ── Reproducibility ───────────────────────────────────────────────
 RANDOM_SEED = 42
 
+# ── Significance testing ──────────────────────────────────────────
+BOOTSTRAP_ITERATIONS = 10_000   # paired bootstrap resamples
+BOOTSTRAP_CI_LEVEL = 0.95       # two-sided confidence level
+
 
 def seed_everything(seed: int = RANDOM_SEED) -> None:
     """Seed Python, NumPy, and PYTHONHASHSEED-style sources."""
