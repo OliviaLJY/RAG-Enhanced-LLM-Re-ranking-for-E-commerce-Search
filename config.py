@@ -15,6 +15,7 @@ RESULTS_DIR = ROOT_DIR / "results"
 BM25_BASELINE_RESULTS = RESULTS_DIR / "bm25_baseline_results.json"
 BM25_CANDIDATES = RESULTS_DIR / "bm25_top20_candidates.json"
 LLM_RERANK_RESULTS = RESULTS_DIR / "llm_rerank_results.json"
+CROSS_ENCODER_RESULTS = RESULTS_DIR / "cross_encoder_rerank_results.json"
 QUERY_ATTRIBUTES_RESULTS = RESULTS_DIR / "query_attributes.json"
 EVIDENCE_RETRIEVAL_RESULTS = RESULTS_DIR / "evidence_retrieval.json"
 EVIDENCE_VERIFIED_RESULTS = RESULTS_DIR / "evidence_verified.json"
@@ -55,6 +56,8 @@ ATTRIBUTE_SCHEMA_FIELDS = (
 
 # ── Evidence retrieval (Day 6) ────────────────────────────────────
 SBERT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+CROSS_ENCODER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+CROSS_ENCODER_BATCH_SIZE = 64
 EVIDENCE_TOP_K_CANDIDATES = 10   # candidates per query to ground evidence on
 EVIDENCE_ALPHA = 0.6              # weight on cosine vs. keyword score
 EVIDENCE_MIN_SCORE = 0.10         # below this, no evidence is recorded

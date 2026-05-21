@@ -26,8 +26,10 @@ Query
 ```
 
 All four pipeline stages are now end-to-end runnable. The remaining work is
-**experiments**: ablations, hard baselines (`cross-encoder/ms-marco-MiniLM-L-6-v2`),
-significance tests, and the e-commerce-dataset transfer.
+**experiments**: ablations, significance tests, and the e-commerce-dataset
+transfer. The hard cross-encoder baseline
+(`cross-encoder/ms-marco-MiniLM-L-6-v2`) is implemented in
+`cross_encoder_rerank.py`.
 
 ### Results (MS MARCO v1.1, 5K-query slice)
 
@@ -76,6 +78,9 @@ python evidence_verify.py --min-confidence 3
 # Stage 3 — LLM rerank (no-RAG baseline) — Requires OPENAI_API_KEY
 python llm_rerank.py --num-rerank 50 --model gpt-4o-mini
 
+# Hard baseline — Cross-encoder rerank (no API, local MiniLM model)
+python cross_encoder_rerank.py --num-rerank 500
+
 # Stage 4a — Attribute-grounded listwise rerank (RankGPT-style + evidence)
 python rerank_listwise_evidence.py --num-rerank 50 --top-k 20
 
@@ -87,6 +92,8 @@ python rerank_pointwise_evidence.py --num-rerank 50 --top-k 10
 # Recompute metrics from any saved results file (no LLM calls)
 python evaluate.py results/bm25_top20_candidates.json
 python evaluate.py results/bm25_top20_candidates.json --use-llm-order --k 10
+python evaluate.py results/cross_encoder_rerank_results.json \
+    --use-llm-order --rerank-key cross_encoder_reranked_doc_ids --k 10
 ```
 
 ### Project layout
@@ -99,6 +106,7 @@ python evaluate.py results/bm25_top20_candidates.json --use-llm-order --k 10
 ├── evidence_retrieval.py        # Stage 2b: per-attribute evidence, v0 (Day 6)
 ├── evidence_verify.py           # Stage 2c: LLM verifier, v1 (Day 6)
 ├── llm_rerank.py                # Stage 3: RankGPT-style listwise rerank (no-RAG)
+├── cross_encoder_rerank.py      # Hard baseline: cross-encoder/ms-marco-MiniLM-L-6-v2
 ├── rerank_listwise_evidence.py  # Stage 4a: attribute-grounded listwise (Day 7)
 ├── rerank_pointwise_evidence.py # Stage 4b: attribute-grounded pointwise + reason (Day 7)
 ├── evaluate.py             # Recompute metrics from saved JSON
@@ -156,8 +164,9 @@ written**:
    - Both consume the v0 *or* v1 evidence JSON via `--evidence`, so the
      `evidence_quality × rerank_mode` ablation is a 2×2 grid for free.
 4. **Ablations** — `-attribute`, `-evidence` (v0 vs. v1), listwise vs.
-   pointwise, full method, plus a hardened baseline
-   (`cross-encoder/ms-marco-MiniLM-L-6-v2`) and significance tests.
+   pointwise, full method, plus significance tests. The hard cross-encoder
+   baseline (`cross-encoder/ms-marco-MiniLM-L-6-v2`) is implemented in
+   `cross_encoder_rerank.py`.
 
 ### Query → Attribute schema (Day 5)
 
@@ -276,7 +285,10 @@ works on either file:
 | `evidence_retrieval.json` (v0)   | run a         | run b          |
 | `evidence_verified.json` (v1)    | run c         | run d          |
 
-Plus the no-RAG `llm_rerank.py` (run 0) and BM25 (run -) as references.
+Plus the no-RAG `llm_rerank.py` (run 0), BM25 (run -), and the cross-encoder
+hard baseline `cross_encoder_rerank.py` (run +) as references. The cross-encoder
+is the off-the-shelf benchmark that the attribute-grounded methods must beat to
+claim a real win — not just a lift over BM25.
 
 See [中文](#中文) for the original day-by-day plan.
 

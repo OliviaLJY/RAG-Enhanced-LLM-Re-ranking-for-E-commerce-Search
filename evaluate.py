@@ -35,20 +35,21 @@ def recall_at_k(retrieved_ids: List[int], relevant_ids: Set[int], k: int) -> flo
     return sum(1 for d in retrieved_ids[:k] if d in relevant_ids) / len(relevant_ids)
 
 
-def _doc_ids(q: Dict, use_llm_order: bool) -> List[int]:
-    if use_llm_order and "llm_reranked_doc_ids" in q:
-        return q["llm_reranked_doc_ids"]
+def _doc_ids(q: Dict, use_llm_order: bool, rerank_key: str = "llm_reranked_doc_ids") -> List[int]:
+    if use_llm_order and rerank_key in q:
+        return q[rerank_key]
     return [c["doc_id"] for c in q["candidates"]]
 
 
-def evaluate(path: str, use_llm_order: bool, k: int) -> Dict[str, float]:
+def evaluate(path: str, use_llm_order: bool, k: int,
+             rerank_key: str = "llm_reranked_doc_ids") -> Dict[str, float]:
     with open(path) as f:
         data = json.load(f)
     queries = data["queries"] if "queries" in data else data
 
-    if use_llm_order and not any("llm_reranked_doc_ids" in q for q in queries):
+    if use_llm_order and not any(rerank_key in q for q in queries):
         raise SystemExit(
-            f"--use-llm-order was passed but no llm_reranked_doc_ids found in {path}."
+            f"--use-llm-order was passed but no {rerank_key} found in {path}."
         )
 
     mrrs, recalls_k, recalls_100 = [], [], []
@@ -56,7 +57,7 @@ def evaluate(path: str, use_llm_order: bool, k: int) -> Dict[str, float]:
         rel = set(q["relevant_doc_ids"])
         if not rel:
             continue
-        ids = _doc_ids(q, use_llm_order)
+        ids = _doc_ids(q, use_llm_order, rerank_key)
         mrrs.append(mrr(ids[:k], rel))
         recalls_k.append(recall_at_k(ids, rel, k=k))
         recalls_100.append(recall_at_k(ids, rel, k=100))
@@ -73,15 +74,18 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Recompute Recall/MRR from a results JSON.")
     p.add_argument("path", help="Path to a candidates or rerank JSON.")
     p.add_argument("--use-llm-order", action="store_true",
-                   help="Score using llm_reranked_doc_ids instead of BM25 order.")
+                   help="Score using a reranked doc-id list instead of BM25 order.")
+    p.add_argument("--rerank-key", default="llm_reranked_doc_ids",
+                   help="JSON field holding the reranked doc_id list "
+                        "(e.g. cross_encoder_reranked_doc_ids).")
     p.add_argument("--k", type=int, default=config.DEFAULT_K_METRIC)
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    metrics = evaluate(args.path, args.use_llm_order, args.k)
-    order = "LLM rerank" if args.use_llm_order else "BM25"
+    metrics = evaluate(args.path, args.use_llm_order, args.k, args.rerank_key)
+    order = args.rerank_key if args.use_llm_order else "BM25"
     print(f"\nMetrics on {args.path} (order = {order}):")
     for key, val in metrics.items():
         if isinstance(val, float):
