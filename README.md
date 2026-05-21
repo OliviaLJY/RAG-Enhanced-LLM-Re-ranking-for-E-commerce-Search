@@ -101,6 +101,14 @@ python significance.py \
     --method   results/cross_encoder_rerank_results.json \
     --method-key cross_encoder_reranked_doc_ids \
     --output results/sig_ce_vs_bm25.json
+
+# Long-tail analysis: which BM25-rank buckets does the lift come from?
+python long_tail_analysis.py \
+    --baseline results/bm25_top20_candidates.json \
+    --method   results/cross_encoder_rerank_results.json \
+    --method-key cross_encoder_reranked_doc_ids \
+    --method-label cross_encoder \
+    --output results/long_tail_ce_vs_bm25.json
 ```
 
 ### Project layout
@@ -115,6 +123,7 @@ python significance.py \
 ├── llm_rerank.py                # Stage 3: RankGPT-style listwise rerank (no-RAG)
 ├── cross_encoder_rerank.py      # Hard baseline: cross-encoder/ms-marco-MiniLM-L-6-v2
 ├── significance.py              # Paired-bootstrap p-value + 95% CI on MRR deltas
+├── long_tail_analysis.py        # Per-BM25-rank-bucket lift breakdown
 ├── rerank_listwise_evidence.py  # Stage 4a: attribute-grounded listwise (Day 7)
 ├── rerank_pointwise_evidence.py # Stage 4b: attribute-grounded pointwise + reason (Day 7)
 ├── evaluate.py             # Recompute metrics from saved JSON
