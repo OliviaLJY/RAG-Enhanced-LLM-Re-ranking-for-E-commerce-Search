@@ -91,8 +91,11 @@ def rerank_query(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=config.LLM_TEMPERATURE,
                 max_tokens=config.LLM_MAX_TOKENS,
+                **config.llm_chat_kwargs(),
             )
-            raw = response.choices[0].message.content.strip()
+            raw = (response.choices[0].message.content or "").strip()
+            if not raw:
+                raise ValueError("empty LLM response (likely thinking consumed max_tokens)")
             return parse_ranking(raw, len(candidates))
         except Exception as e:  # noqa: BLE001
             if attempt < max_retries:
@@ -167,11 +170,7 @@ def main() -> None:
     bm25_recall5 = compute_recall_at_k(queries, use_llm_order=False, k=5)
     print(f"BM25 baseline on subset — MRR@{k}: {bm25_mrr10:.4f}, Recall@5: {bm25_recall5:.4f}")
 
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise SystemExit("OPENAI_API_KEY is not set. See .env.example.")
-
-    client = OpenAI(api_key=api_key)
+    client = config.make_llm_client()
     failed = 0
     for q in tqdm(queries, desc="LLM reranking"):
         candidates = q["candidates"][: args.top_k_rerank]

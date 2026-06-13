@@ -110,8 +110,9 @@ def score_candidate(
                 temperature=config.LLM_TEMPERATURE,
                 max_tokens=config.POINTWISE_MAX_TOKENS,
                 response_format={"type": "json_object"},
+                **config.llm_chat_kwargs(),
             )
-            raw = response.choices[0].message.content.strip()
+            raw = (response.choices[0].message.content or "").strip()
             parsed = json.loads(raw)
             score_raw = parsed.get("score")
             try:
@@ -192,10 +193,7 @@ def main() -> None:
     bm25_recall5 = compute_recall_at_k(queries, use_llm=False, k=5)
     print(f"BM25 baseline on subset — MRR@{k}: {bm25_mrr10:.4f}, Recall@5: {bm25_recall5:.4f}")
 
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise SystemExit("OPENAI_API_KEY is not set. See .env.example.")
-    client = OpenAI(api_key=api_key)
+    client = config.make_llm_client()
 
     failed_calls = 0
     pbar = tqdm(total=total_calls, desc="Pointwise scoring")

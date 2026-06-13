@@ -22,11 +22,9 @@ env/
 .idea/
 .DS_Store
 
-# Large generated artifacts — keep small JSON summaries, ignore bulk dumps
-results/bm25_top20_candidates.json
-results/*_candidates.json
-results/*_predictions.json
-results/cache/
+# Generated artifacts — ignore everything in results/ (keep the folder via .gitkeep)
+results/*
+!results/.gitkeep
 
 # HuggingFace dataset cache (when HF_HOME is local)
 .cache/

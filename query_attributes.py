@@ -131,8 +131,9 @@ def decompose_query(
                 temperature=config.LLM_TEMPERATURE,
                 max_tokens=config.ATTRIBUTE_MAX_TOKENS,
                 response_format={"type": "json_object"},
+                **config.llm_chat_kwargs(),
             )
-            raw_text = response.choices[0].message.content.strip()
+            raw_text = (response.choices[0].message.content or "").strip()
             parsed = json.loads(raw_text)
             return normalize_attributes(parsed)
         except json.JSONDecodeError as e:
@@ -197,10 +198,7 @@ def main() -> None:
     if existing:
         print(f"Resuming: {len(existing)} queries already decomposed.")
 
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise SystemExit("OPENAI_API_KEY is not set. See .env.example.")
-    client = OpenAI(api_key=api_key)
+    client = config.make_llm_client()
 
     results: List[Dict] = list(existing.values())
     failed = 0
